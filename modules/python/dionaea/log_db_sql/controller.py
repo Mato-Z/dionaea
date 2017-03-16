@@ -1,6 +1,8 @@
 import datetime
 import json
 import logging
+import subprocess
+import re
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
@@ -37,11 +39,7 @@ class LogSQLHandler(ihandler):
         model.Base.query = self.db_session.query_property()
         model.Base.metadata.create_all(bind=engine)
 
-    def handle_incident(self, icd):
-        #        print("unknown")
-        pass
-
-    def connection_insert(self, icd, connection_type):
+    def connection_insert_raw(self, icd, connection_type, asid):
         con = icd.con
         connection = model.Connection(
             timestamp=datetime.datetime.now(),
@@ -52,13 +50,14 @@ class LogSQLHandler(ihandler):
             local_port=con.local.port,
             remote_host=con.remote.host,
             remote_port=con.remote.port,
-            remote_hostname=con.remote.hostname
+            remote_hostname=con.remote.hostname,
+            asnid=asid
         )
         connection.root = connection.id
 
         self.db_session.add(connection)
         self.db_session.commit()
-
+        attackid = connection.id
         # Old trigger
         self.db_session.query(
             model.Connection
@@ -69,7 +68,6 @@ class LogSQLHandler(ihandler):
         })
         self.db_session.commit()
 
-        attackid = connection.id
         self.attacks[con] = (attackid, attackid)
 
         # maybe this was a early connection?
@@ -96,7 +94,74 @@ class LogSQLHandler(ihandler):
                     "root": attackid
                 })
             self.db_session.commit()
+
         return attackid
+
+
+    def connection_insert_with_asn(self, icd, connection_type):
+        def addslashes(s):
+            l = ["\\", '"', "'", "\0", ]
+            for i in l:
+                if i in s:
+                    s = s.replace(i, '\\'+i)
+            return s
+
+        def reverseIP(address):
+            temp = re.split("\.", address)
+            convertedAddress = str(temp[3]) +'.' + str(temp[2]) + '.' + str(temp[1]) +'.' + str(temp[0])
+            return convertedAddress
+
+        con = icd.con
+        peerIP = con.remote.host
+        querycmd1 = reverseIP(peerIP) + '.origin.asn.cymru.com'
+        response1 = subprocess.Popen(['dig', '-t', 'TXT', querycmd1, '+short'], stdout=subprocess.PIPE).communicate()[0]
+        response1List = re.split('\|', str(response1, 'utf8'))
+        ASN = response1List[0].strip('" ')
+        querycmd2 = 'AS' + ASN + '.asn.cymru.com'
+        response2 = subprocess.Popen(['dig', '-t', 'TXT', querycmd2, '+short'], stdout=subprocess.PIPE).communicate()[0]
+        response2List = re.split('\|', str(response2, 'utf8'))
+        logger.info("RESPONSE1: %s " % (str(response1, 'utf8')))
+        logger.info("RESPONSE2: %s " % (str(response2, 'utf8')))
+        if len(response2List) < 4:
+            attackid = self.connection_insert_raw(icd, connection_type, 1)
+            logger.info("Invalid AS response, attackid = %i" % (attackid))
+        else:
+            isp = addslashes(response2List[4].replace('"', ''))
+            network = addslashes(response1List[1].strip())
+            country = addslashes(response1List[2].strip())
+            registry = addslashes(response1List[3].strip())
+            isp = network + "-" + isp
+            r = self.db_session.query(
+                model.AsInfo
+            ).filter(
+                model.AsInfo.asn == ASN and model.AsInfo.rir == registry and model.AsInfo.country == country and model.AsInfo.asname == isp
+            ).first()
+            if r:
+                attackid = self.connection_insert_raw(icd, connection_type, int(r.id))
+                logger.info("Existing AS response (%s,%s,%s,%s), attackid = %i" % (isp, network, country, registry, attackid))
+            else:
+                asRecord = model.AsInfo(
+                    asn = ASN,
+                    rir = registry,
+                    country = country,
+                    asname = isp
+                );
+
+                self.db_session.add(asRecord)
+                self.db_session.commit()
+                asnid = asRecord.id
+                attackid = self.connection_insert_raw(icd, connection_type, asnid)
+                logger.info("New AS response (%s,%s,%s,%s), attackid = %i" % (isp, network, country, registry, attackid))
+      
+        return attackid
+
+    def handle_incident(self, icd):
+#       print("unknown")
+        pass
+
+    def connection_insert(self, icd, connection_type):
+        con = icd.con
+        return self.connection_insert_with_asn(icd, connection_type)
 
     def handle_incident_dionaea_connection_tcp_listen(self, icd):
         attackid = self.connection_insert(icd, 'listen')

@@ -26,6 +26,7 @@ class Connection(Base):
     remote_host = Column(String(255))
     remote_port = Column(Integer)
     remote_hostname = Column(String(255))
+    asnid = Column(Integer, ForeignKey('asinfo.id'))
 
 
 class DownloadData(Base):
@@ -306,3 +307,13 @@ class VirusTotalScan(Base):
     md5_hash = Column(String(255), index=True)
     permalink = Column(String(255))
     timestamp = Column(DateTime)
+    
+class AsInfo(Base):
+    __tablename__ = "asinfo"
+
+    id = Column(Integer, primary_key=True)
+    asn = Column(Integer, index=True)
+    rir = Column(String(30), index=True)
+    country = Column(String(30), index=True)
+    asname = Column(String(255), index=True)
+    
