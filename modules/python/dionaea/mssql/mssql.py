@@ -145,7 +145,7 @@ class mssqld(connection):
             r = TDS_Prelogin_Response()
             #FIXME: any better way to initialise this?
             r.VersionToken.TokenType = 0x00
-            r.VersionToken.Offset = 26
+            r.VersionToken.Offset = 25
             r.VersionToken.Len = 6
             r.EncryptionToken.TokenType = 0x01
             r.EncryptionToken.Offset = 32
